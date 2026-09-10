@@ -1,0 +1,22 @@
+{
+  "name": "scoutlens",
+  "version": "1.0.0",
+  "private": true,
+  "description": "ScoutLens - football scouting & fantasy analytics over the Big 5 European leagues (MySQL + Express + React)",
+  "type": "module",
+  "scripts": {
+    "db:schema": "node etl/run-sql.js db/schema",
+    "db:import": "node etl/import.js",
+    "db:logic": "node etl/run-sql.js db/logic",
+    "db:export": "node etl/export-seed.js",
+    "db:setup": "npm run db:schema && npm run db:import && npm run db:logic",
+    "server": "npm --prefix server run dev",
+    "client": "npm --prefix client run dev",
+    "install:all": "npm install && npm --prefix server install && npm --prefix client install"
+  },
+  "dependencies": {
+    "csv-parse": "^5.5.6",
+    "dotenv": "^16.4.5",
+    "mysql2": "^3.11.3"
+  }
+}
