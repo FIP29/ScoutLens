@@ -1,0 +1,65 @@
+// ---------------------------------------------------------------------
+// ScoutLens API - Express + MySQL.
+//
+// The server is deliberately thin: it validates input, turns filter
+// selections into parameterised SQL, and hands the work to MySQL views
+// and stored procedures. No statistics are recomputed in JavaScript.
+// ---------------------------------------------------------------------
+
+// pool.js loads the project-root .env before anything reads process.env.
+import { pool } from './db/pool.js';
+import express from 'express';
+import cors from 'cors';
+import { metaRouter } from './routes/meta.js';
+import { playersRouter } from './routes/players.js';
+import { analyticsRouter } from './routes/analytics.js';
+import { scoutingRouter } from './routes/scouting.js';
+
+const app = express();
+const PORT = Number(process.env.PORT || 4000);
+
+app.use(cors());
+app.use(express.json({ limit: '256kb' }));
+
+// Liveness plus a quick database round trip, so `curl /api/health` tells
+// you whether the API is up *and* whether MySQL is reachable.
+app.get('/api/health', async (_req, res) => {
+  try {
+    const [rows] = await pool.query(
+      'SELECT COUNT(*) AS player_seasons FROM player_seasons');
+    res.json({ status: 'ok', database: 'connected', ...rows[0] });
+  } catch (err) {
+    res.status(503).json({ status: 'degraded', database: 'unreachable', error: err.message });
+  }
+});
+
+app.use('/api/meta', metaRouter);
+app.use('/api/players', playersRouter);
+app.use('/api', analyticsRouter);
+app.use('/api', scoutingRouter);
+
+app.use((req, res) => {
+  res.status(404).json({ error: `No route for ${req.method} ${req.originalUrl}` });
+});
+
+// Central error handler. Known ApiErrors surface their message; anything
+// else is logged in full and reported generically.
+// eslint-disable-next-line no-unused-vars
+app.use((err, _req, res, _next) => {
+  const status = err.status ?? 500;
+  if (status >= 500) console.error('[api]', err);
+  res.status(status).json({
+    error: status >= 500 ? 'Internal server error' : err.message,
+  });
+});
+
+const server = app.listen(PORT, () => {
+  console.log(`ScoutLens API listening on http://localhost:${PORT}`);
+});
+
+// Let nodemon/--watch restarts and container stops close MySQL cleanly.
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  process.on(signal, () => {
+    server.close(() => pool.end().then(() => process.exit(0)));
+  });
+}
