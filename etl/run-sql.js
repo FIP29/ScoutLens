@@ -32,7 +32,20 @@ for (const file of files) {
       executed++;
     } catch (err) {
       console.log('failed');
-      console.error(`\n${file}: ${err.message}\n--- statement ---\n${statement.slice(0, 400)}\n`);
+      console.error(`\n${file}: ${err.message}`);
+
+      // MySQL 8 enables binary logging by default and refuses to let a
+      // non-SUPER user create stored functions or triggers. The message
+      // MySQL returns does not say how to fix it, so spell it out.
+      if (/SUPER privilege and binary logging/i.test(err.message)) {
+        console.error(
+          '\nFix: an administrator must allow non-SUPER users to create routines.\n' +
+          '  sudo mysql -e "SET GLOBAL log_bin_trust_function_creators = 1;"\n' +
+          '(use SET PERSIST instead of SET GLOBAL on MySQL 8 to survive a restart)\n' +
+          'Then re-run this step. See README.md > Troubleshooting.');
+      }
+
+      console.error(`--- statement ---\n${statement.slice(0, 400)}\n`);
       await conn.end();
       process.exit(1);
     }
