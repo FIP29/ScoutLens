@@ -56,8 +56,18 @@ GRANT ALL PRIVILEGES ON scoutlens.* TO 'scoutlens'@'localhost';
 FLUSH PRIVILEGES;
 ```
 
-Creating routines and triggers also needs `SUPER` or
-`log_bin_trust_function_creators = 1`, which is the default on a local install.
+**MySQL 8 users — do this too.** MySQL 8 enables binary logging by default,
+which stops a non-`SUPER` user from creating the stored functions and triggers
+this project uses. Run once, as an administrator:
+
+```sql
+SET PERSIST log_bin_trust_function_creators = 1;
+```
+
+On MariaDB, or on MySQL 5.7, use `SET GLOBAL` instead of `SET PERSIST`
+(`SET GLOBAL` is reset by a server restart; `SET PERSIST` survives one).
+Skipping this makes `npm run db:logic` fail at `03_procedures.sql` with
+*"You do not have the SUPER privilege and binary logging is enabled"*.
 
 ### 2. Configure and install
 
@@ -105,6 +115,32 @@ Verify the whole stack at any time:
 ```bash
 node scripts/smoke-test.mjs     # 24 checks across every route group
 ```
+
+## Troubleshooting
+
+**`03_procedures.sql ... failed` — "You do not have the SUPER privilege and binary
+logging is enabled".** MySQL 8 turns binary logging on by default and then refuses
+to let a non-`SUPER` user create stored functions or triggers. Fix it as an
+administrator, then re-run `npm run db:logic`:
+
+```bash
+sudo mysql -e "SET PERSIST log_bin_trust_function_creators = 1;"
+```
+
+Use `SET GLOBAL` on MariaDB or MySQL 5.7. If `sudo mysql` is itself refused, try
+`sudo mysql --protocol=socket -u root` or
+`sudo mysql --defaults-file=/etc/mysql/debian.cnf`.
+
+**`ERR_CONNECTION_REFUSED` at localhost:5173.** Nothing is listening on that port.
+`npm run server` and `npm run client` each need their own terminal and must stay
+running while you use the app; they print a line and then sit idle, which is normal.
+
+**`Access denied for user`** when running the ETL. Check that the credentials in
+`.env` match the MySQL user you created, and that the user has privileges on
+`scoutlens.*`.
+
+**Is it the API or the database?** `curl http://localhost:4000/api/health` answers
+that: it reports `connected` only when the API can reach MySQL and read the data.
 
 ## Loading from SQL only
 
