@@ -1,0 +1,17 @@
+# dependencies
+node_modules/
+
+# build output
+client/dist/
+dist/
+
+# local configuration (copy .env.example to .env)
+.env
+*.local
+
+# logs and editor noise
+*.log
+npm-debug.log*
+.DS_Store
+.vscode/
+.idea/
