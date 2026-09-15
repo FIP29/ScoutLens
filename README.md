@@ -100,15 +100,27 @@ Takes about 12 seconds end to end and prints what it loaded:
 
 ### 4. Run it
 
-Two terminals:
+```bash
+npm start
+```
+
+That runs the API and the web app together in one terminal, tagging each
+server's output so you can tell them apart:
+
+```
+[api] ScoutLens API listening on http://localhost:4000
+[web]   ➜  Local:   http://localhost:5173/
+```
+
+Open <http://localhost:5173>. Ctrl+C stops both. The Vite dev server proxies
+`/api` to Express, so there is no CORS setup during development.
+
+If you would rather run them separately, in two terminals:
 
 ```bash
 npm run server     # Express API on http://localhost:4000
 npm run client     # React app  on http://localhost:5173
 ```
-
-Open <http://localhost:5173>. The Vite dev server proxies `/api` to Express, so
-there is no CORS setup during development.
 
 Verify the whole stack at any time:
 
@@ -131,9 +143,10 @@ Use `SET GLOBAL` on MariaDB or MySQL 5.7. If `sudo mysql` is itself refused, try
 `sudo mysql --protocol=socket -u root` or
 `sudo mysql --defaults-file=/etc/mysql/debian.cnf`.
 
-**`ERR_CONNECTION_REFUSED` at localhost:5173.** Nothing is listening on that port.
-`npm run server` and `npm run client` each need their own terminal and must stay
-running while you use the app; they print a line and then sit idle, which is normal.
+**`ERR_CONNECTION_REFUSED` at localhost:5173.** Nothing is listening on that port -
+the app is not a always-on website, it is two servers you start. Run `npm start`
+and leave it running while you use the app; it prints two lines and then sits
+idle, which is normal. Closing the terminal stops the app.
 
 **`Access denied for user`** when running the ETL. Check that the credentials in
 `.env` match the MySQL user you created, and that the user has privileges on
