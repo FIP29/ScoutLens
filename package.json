@@ -9,6 +9,7 @@
     "db:import": "node etl/import.js",
     "db:logic": "node etl/run-sql.js db/logic",
     "db:export": "node etl/export-seed.js",
+    "start": "node scripts/start.mjs",
     "db:setup": "npm run db:schema && npm run db:import && npm run db:logic",
     "server": "npm --prefix server run dev",
     "client": "npm --prefix client run dev",
