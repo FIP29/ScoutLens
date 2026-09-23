@@ -15,3 +15,6 @@ npm-debug.log*
 .DS_Store
 .vscode/
 .idea/
+
+# personal study notes — kept locally, not part of the project
+VIVA-PREP.md
