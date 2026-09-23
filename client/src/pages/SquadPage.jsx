@@ -20,6 +20,9 @@ export default function SquadPage() {
   const [error, setError] = useState(null);
   const [notice, setNotice] = useState(null);
   const [tab, setTab] = useState('build');   // 'build' | 'compare'
+  const [browse, setBrowse] = useState([]);       // ranked candidates
+  const [browsePos, setBrowsePos] = useState('DF');
+  const [filling, setFilling] = useState(false);
 
   async function refresh() {
     try { setSquads(await api.squads()); } catch (err) { setError(err.message); }
@@ -34,7 +37,39 @@ export default function SquadPage() {
 
   async function open(id) {
     setError(null);
-    try { setActive(await api.squad(id)); } catch (err) { setError(err.message); }
+    try {
+      const squad = await api.squad(id);
+      setActive(squad);
+      loadBrowse(id, browsePos);
+    } catch (err) { setError(err.message); }
+  }
+
+  // Ranked candidates for the browse panel, so a squad can be built by
+  // clicking rather than by guessing names.
+  async function loadBrowse(squadId, position) {
+    try {
+      setBrowse(await api.squadSuggestions(squadId, position));
+    } catch { setBrowse([]); }
+  }
+
+  // One click: let the database pick the best available XI for the
+  // squad's own formation.
+  async function autofill() {
+    if (!active) return;
+    setFilling(true);
+    setError(null);
+    try {
+      const result = await api.autofillSquad(active.squad_id);
+      setNotice(result.added
+        ? `Added ${result.added} ${result.added === 1 ? 'player' : 'players'} for a ${result.formation}.`
+        : 'Nothing to add — the XI is already full.');
+      await open(active.squad_id);
+      refresh();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setFilling(false);
+    }
   }
 
   async function create(e) {
@@ -84,11 +119,12 @@ export default function SquadPage() {
     try {
       await api.addToSquad(active.squad_id, {
         player_season_id: row.player_season_id,
-        slot: pick.slot,
-        is_captain: pick.captain,
+        // Browse rows already know the right slot for their position;
+        // the name search falls back to whatever the user chose.
+        slot: row.slot ?? pick.slot,
       });
       setCandidates([]);
-      setPick({ ...pick, term: '', captain: false });
+      setPick({ ...pick, term: '' });
       await open(active.squad_id);
       refresh();
     } catch (err) {
@@ -205,14 +241,18 @@ export default function SquadPage() {
                   {squads.map((s) => (
                     <tr key={s.squad_id}>
                       <td>
-                        <button className="ghost small" onClick={() => open(s.squad_id)}>{s.name}</button>
+                        <button className="ghost small squad-name" onClick={() => open(s.squad_id)}
+                                title={s.name}>{s.name}</button>
                         <span className="tag" style={{ marginLeft: 6 }}>{s.formation}</span>
                       </td>
                       <td style={{ color: 'var(--text-dim)' }}>{s.season_label}</td>
                       <td className="num">{int(s.players)}</td>
                       <td className="num" style={{ color: 'var(--accent)' }}>{num(s.projected_points, 1)}</td>
                       <td>
-                        <button className="ghost small danger" onClick={() => removeSquad(s.squad_id)}>Delete</button>
+                        <button className="ghost small danger"
+                                onClick={() => removeSquad(s.squad_id)}
+                                title={`Delete ${s.name}`}
+                                aria-label={`Delete ${s.name}`}>✕</button>
                       </td>
                     </tr>
                   ))}
@@ -237,63 +277,122 @@ export default function SquadPage() {
           </div>
 
           <div className="panel">
-            <h3>Add a player from {active.season_label}</h3>
-            <div className="row">
-              <div className="field" style={{ flex: 1, minWidth: 180 }}>
-                <label>Search name</label>
-                <input
-                  value={pick.term}
-                  placeholder="e.g. Salah"
-                  onChange={(e) => setPick({ ...pick, term: e.target.value })}
-                  onKeyDown={(e) => e.key === 'Enter' && findPlayers()}
-                />
-              </div>
-              <div className="field">
-                <label>Slot</label>
-                <select value={pick.slot} onChange={(e) => setPick({ ...pick, slot: e.target.value })}>
-                  {SLOTS.map((s) => <option key={s} value={s}>{s}</option>)}
-                </select>
-              </div>
-              <div className="field">
-                <label>Captain</label>
-                <select
-                  value={pick.captain ? 'yes' : 'no'}
-                  onChange={(e) => setPick({ ...pick, captain: e.target.value === 'yes' })}
-                >
-                  <option value="no">No</option>
-                  <option value="yes">Yes</option>
-                </select>
-              </div>
-              <button onClick={findPlayers}>Find</button>
+            <div className="row" style={{ justifyContent: 'space-between', marginBottom: 12 }}>
+              <h3 style={{ margin: 0 }}>Add players from {active.season_label}</h3>
+              <button className="primary" onClick={autofill}
+                      disabled={filling || active.players.length >= 11}>
+                {filling ? 'Picking…' : '⚡ Auto-pick best XI'}
+              </button>
             </div>
 
-            {candidates.length > 0 && (
-              <div className="table-wrap" style={{ marginTop: 12 }}>
+            {/* Browse by position - no typing needed */}
+            <div className="tabs" style={{ marginBottom: 12 }}>
+              {[['GK', 'Keepers'], ['DF', 'Defenders'],
+                ['MF', 'Midfielders'], ['FW', 'Forwards']].map(([code, label]) => (
+                <button key={code}
+                        className={browsePos === code ? 'active' : ''}
+                        onClick={() => { setBrowsePos(code); loadBrowse(active.squad_id, code); }}>
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            {browse.length === 0 ? (
+              <div className="empty" style={{ padding: 16 }}>
+                No more {browsePos === 'GK' ? 'keepers' : 'players'} available for this season.
+              </div>
+            ) : (
+              <div className="table-wrap">
                 <table>
                   <thead>
                     <tr>
-                      <th>Player</th><th>Pos</th><th>Club</th>
+                      <th>Player</th><th>Club</th>
+                      <th style={{ textAlign: 'right' }}>Age</th>
+                      <th style={{ textAlign: 'right' }}>Min</th>
                       <th style={{ textAlign: 'right' }}>G</th>
                       <th style={{ textAlign: 'right' }}>A</th>
                       <th style={{ textAlign: 'right' }}>FPts</th><th />
                     </tr>
                   </thead>
                   <tbody>
-                    {candidates.map((c) => (
+                    {browse.slice(0, 10).map((c) => (
                       <tr key={c.player_season_id}>
                         <td>{c.player_name}</td>
-                        <td><PositionChip code={c.position_code} /></td>
                         <td>{c.team_name}</td>
+                        <td className="num">{int(c.age_years)}</td>
+                        <td className="num">{int(c.minutes)}</td>
                         <td className="num">{int(c.goals)}</td>
                         <td className="num">{int(c.assists)}</td>
-                        <td className="num" style={{ color: 'var(--accent)' }}>{num(c.total_points, 1)}</td>
-                        <td><button className="small primary" onClick={() => addPlayer(c)}>Add</button></td>
+                        <td className="num" style={{ color: 'var(--accent)' }}>
+                          {num(c.total_points, 1)}
+                        </td>
+                        <td>
+                          <button className="small primary"
+                                  onClick={() => addPlayer({ ...c, slot: c.slot })}>
+                            Add
+                          </button>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
             )}
+
+            <details style={{ marginTop: 12 }}>
+              <summary style={{ cursor: 'pointer', fontSize: 13, color: 'var(--text-dim)' }}>
+                Looking for someone specific?
+              </summary>
+              <div className="row" style={{ marginTop: 10 }}>
+                <div className="field" style={{ flex: 1, minWidth: 180 }}>
+                  <label htmlFor="sq-find">Search by name</label>
+                  <input id="sq-find" value={pick.term} placeholder="e.g. Salah"
+                         onChange={(e) => setPick({ ...pick, term: e.target.value })}
+                         onKeyDown={(e) => e.key === 'Enter' && findPlayers()} />
+                </div>
+                <div className="field">
+                  <label htmlFor="sq-slot">Slot</label>
+                  <select id="sq-slot" value={pick.slot}
+                          onChange={(e) => setPick({ ...pick, slot: e.target.value })}>
+                    {SLOTS.map((s) => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                </div>
+                <button onClick={findPlayers}>Find</button>
+              </div>
+
+              {candidates.length > 0 && (
+                <div className="table-wrap" style={{ marginTop: 10 }}>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Player</th><th>Pos</th><th>Club</th>
+                        <th style={{ textAlign: 'right' }}>G</th>
+                        <th style={{ textAlign: 'right' }}>A</th>
+                        <th style={{ textAlign: 'right' }}>FPts</th><th />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {candidates.map((c) => (
+                        <tr key={c.player_season_id}>
+                          <td>{c.player_name}</td>
+                          <td><PositionChip code={c.position_code} /></td>
+                          <td>{c.team_name}</td>
+                          <td className="num">{int(c.goals)}</td>
+                          <td className="num">{int(c.assists)}</td>
+                          <td className="num" style={{ color: 'var(--accent)' }}>
+                            {num(c.total_points, 1)}
+                          </td>
+                          <td>
+                            <button className="small primary"
+                                    onClick={() => addPlayer(c)}>Add</button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </details>
           </div>
 
           <div className="panel">

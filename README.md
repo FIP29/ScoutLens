@@ -214,6 +214,11 @@ idle, which is normal. Closing the terminal stops the app.
 `.env` match the MySQL user you created, and that the user has privileges on
 `scoutlens.*`.
 
+**"The database is out of date for this version of the app."** You pulled a
+newer version whose migration has not been run. Fix it with `npm run db:migrate`
+and reload. (Earlier builds reported this as a bare "Internal server error"; the
+API now names the cause and the command.)
+
 **Is it the API or the database?** `curl http://localhost:4000/api/health` answers
 that: it reports `connected` only when the API can reach MySQL and read the data.
 

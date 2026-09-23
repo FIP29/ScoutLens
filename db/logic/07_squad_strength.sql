@@ -282,3 +282,71 @@ BEGIN
 END$$
 
 DELIMITER ;
+
+-- ---------------------------------------------------------------------
+-- Suggest a starting XI for a season and formation.
+--
+-- Building a squad by typing eleven names is tedious, so this picks the
+-- best available player for each position by fantasy points. Ranking
+-- happens inside a window function - ROW_NUMBER() partitioned by
+-- position - so the "best N per position" selection is one pass over the
+-- data rather than four separate queries.
+--
+-- p_exclude_squad lets the caller top up a partly-built squad without
+-- suggesting players who are already in it.
+-- ---------------------------------------------------------------------
+DROP PROCEDURE IF EXISTS sp_suggest_xi;
+
+DELIMITER $$
+
+CREATE PROCEDURE sp_suggest_xi(
+  IN p_season_id     TINYINT UNSIGNED,
+  IN p_def           TINYINT UNSIGNED,
+  IN p_mid           TINYINT UNSIGNED,
+  IN p_fwd           TINYINT UNSIGNED,
+  IN p_min_minutes   SMALLINT UNSIGNED,
+  IN p_exclude_squad MEDIUMINT UNSIGNED)
+BEGIN
+  WITH ranked AS (
+    SELECT
+      vps.player_season_id,
+      vps.player_id,
+      vps.player_name,
+      vps.position_code,
+      vps.team_name,
+      vps.age_years,
+      vps.minutes,
+      vps.goals,
+      vps.assists,
+      fp.total_points,
+      ROW_NUMBER() OVER (
+        PARTITION BY vps.position_code
+        ORDER BY fp.total_points DESC, vps.minutes DESC
+      ) AS rn
+    FROM v_player_season vps
+    JOIN fantasy_points fp
+      ON  fp.player_season_id = vps.player_season_id
+      AND fp.ruleset_id = fn_active_ruleset()
+    WHERE vps.season_id = p_season_id
+      AND vps.minutes >= IFNULL(p_min_minutes, 900)
+      AND vps.position_code IS NOT NULL
+      AND (p_exclude_squad IS NULL OR NOT EXISTS (
+            SELECT 1 FROM squad_players sp
+             WHERE sp.squad_id = p_exclude_squad
+               AND sp.player_season_id = vps.player_season_id))
+  )
+  SELECT
+    player_season_id, player_id, player_name, position_code, team_name,
+    age_years, minutes, goals, assists, total_points,
+    CASE position_code
+      WHEN 'GK' THEN 'GK' WHEN 'DF' THEN 'DEF'
+      WHEN 'MF' THEN 'MID' ELSE 'FWD' END AS slot
+  FROM ranked
+  WHERE (position_code = 'GK' AND rn <= 1)
+     OR (position_code = 'DF' AND rn <= IFNULL(p_def, 4))
+     OR (position_code = 'MF' AND rn <= IFNULL(p_mid, 4))
+     OR (position_code = 'FW' AND rn <= IFNULL(p_fwd, 2))
+  ORDER BY FIELD(position_code, 'GK', 'DF', 'MF', 'FW'), total_points DESC;
+END$$
+
+DELIMITER ;

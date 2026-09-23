@@ -42,10 +42,30 @@ app.use((req, res) => {
   res.status(404).json({ error: `No route for ${req.method} ${req.originalUrl}` });
 });
 
+// MySQL errors that mean "the database does not have the shape this build
+// of the app expects" - almost always a pulled update whose migration has
+// not been run yet. Reporting these as a generic 500 sends people hunting
+// for a bug in the wrong place, so they get their own message.
+const SCHEMA_MISMATCH = new Set([
+  'ER_BAD_FIELD_ERROR',   // unknown column
+  'ER_NO_SUCH_TABLE',     // missing table
+  'ER_SP_DOES_NOT_EXIST', // missing stored procedure or function
+  'ER_VIEW_INVALID',      // a view referencing something that is gone
+]);
+
 // Central error handler. Known ApiErrors surface their message; anything
 // else is logged in full and reported generically.
 // eslint-disable-next-line no-unused-vars
 app.use((err, _req, res, _next) => {
+  if (SCHEMA_MISMATCH.has(err.code)) {
+    console.error('[api] schema mismatch:', err.sqlMessage ?? err.message);
+    return res.status(503).json({
+      error: 'The database is out of date for this version of the app. '
+           + 'Run "npm run db:migrate" in the project folder, then reload this page.',
+      detail: err.sqlMessage ?? err.message,
+    });
+  }
+
   const status = err.status ?? 500;
   if (status >= 500) console.error('[api]', err);
   res.status(status).json({

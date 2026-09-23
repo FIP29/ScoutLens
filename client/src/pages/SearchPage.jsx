@@ -112,8 +112,15 @@ export default function SearchPage() {
     }
   }
 
-  // Show something useful on arrival rather than an empty screen.
-  useEffect(() => { if (meta) run(1); /* eslint-disable-next-line */ }, [meta]);
+  // Search as you type. Nothing here needs a button press: a short debounce
+  // absorbs keystrokes so a name search fires once the user pauses rather
+  // than on every character, and dropdown changes apply immediately.
+  useEffect(() => {
+    if (!meta) return;
+    const handle = setTimeout(() => run(1), quick.player_name ? 350 : 0);
+    return () => clearTimeout(handle);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [meta, quick]);
 
   function handleSort(key) {
     const nextDir = sort === key && dir === 'desc' ? 'asc' : 'desc';
@@ -131,16 +138,24 @@ export default function SearchPage() {
   }
 
   async function addToShortlist(row) {
-    if (!targetList) {
-      setNotice({ kind: 'error', text: 'Create a shortlist first, on the Shortlists page.' });
-      return;
-    }
     try {
-      await api.addToShortlist(targetList, { player_season_id: row.player_season_id });
-      const list = shortlists.find((s) => String(s.shortlist_id) === String(targetList));
+      let listId = targetList;
+      let listName = shortlists.find((s) => String(s.shortlist_id) === String(listId))?.name;
+
+      // No lists yet? Make one rather than sending the user away to create
+      // it themselves and come back.
+      if (!listId) {
+        const created = await api.createShortlist({ name: 'My shortlist' });
+        listId = String(created.shortlist_id);
+        listName = created.name;
+        setShortlists(await api.shortlists());
+        setTargetList(listId);
+      }
+
+      await api.addToShortlist(listId, { player_season_id: row.player_season_id });
       setNotice({
         kind: 'ok',
-        text: `Added ${row.player_name} (${row.season_label}) to “${list?.name ?? 'shortlist'}”.`,
+        text: `Added ${row.player_name} (${row.season_label}) to “${listName ?? 'My shortlist'}”.`,
       });
     } catch (err) {
       setNotice({ kind: 'error', text: err.message });
@@ -208,7 +223,9 @@ export default function SearchPage() {
               <label htmlFor="sl-target">Add to shortlist</label>
               <select id="sl-target" value={targetList}
                       onChange={(e) => setTargetList(e.target.value)}>
-                <option value="">— select —</option>
+                <option value="">
+                  {shortlists.length ? '— select —' : 'Creates “My shortlist”'}
+                </option>
                 {shortlists.map((s) => (
                   <option key={s.shortlist_id} value={s.shortlist_id}>{s.name}</option>
                 ))}

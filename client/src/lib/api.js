@@ -53,6 +53,9 @@ export const api = {
   squads: () => request('/squads'),
   squad: (id) => request(`/squads/${id}`),
   squadStrength: (id) => request(`/squads/${id}/strength`),
+  squadSuggestions: (id, position) =>
+    request(`/squads/${id}/suggestions${position ? `?position=${position}` : ''}`),
+  autofillSquad: (id) => request(`/squads/${id}/autofill`, { method: 'POST', body: {} }),
   compareSquads: (a, b) => request(`/squads/compare?a=${a}&b=${b}`),
   createSquad: (body) => request('/squads', { method: 'POST', body }),
   deleteSquad: (id) => request(`/squads/${id}`, { method: 'DELETE' }),

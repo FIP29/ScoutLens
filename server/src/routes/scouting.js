@@ -1,7 +1,7 @@
 // The write side of the app: shortlists, squads and saved searches.
 import { Router } from 'express';
 import { query, callProc, pool } from '../db/pool.js';
-import { asyncHandler, ApiError, requiredInt } from '../lib/http.js';
+import { asyncHandler, ApiError, optionalInt, requiredInt } from '../lib/http.js';
 
 export const scoutingRouter = Router();
 
@@ -265,6 +265,86 @@ scoutingRouter.post('/squads', asyncHandler(async (req, res) => {
     if (err.code === 'ER_NO_REFERENCED_ROW_2') throw new ApiError(404, 'That season does not exist');
     throw err;
   }
+}));
+
+/**
+ * "4-3-3" -> { def: 4, mid: 3, fwd: 3 }. A four-band formation such as
+ * 4-2-3-1 folds its middle bands together, since the database only
+ * distinguishes GK/DF/MF/FW.
+ */
+function parseFormation(formation) {
+  const bands = String(formation ?? '4-4-2')
+    .split('-').map((n) => Number(n)).filter(Number.isFinite);
+  if (bands.length < 3) return { def: 4, mid: 4, fwd: 2 };
+  return {
+    def: bands[0],
+    mid: bands.slice(1, -1).reduce((a, b) => a + b, 0),
+    fwd: bands[bands.length - 1],
+  };
+}
+
+// Candidates to add, ranked, without the user having to guess a name.
+scoutingRouter.get('/squads/:id/suggestions', asyncHandler(async (req, res) => {
+  const id = requiredInt(req.params.id, 'id');
+  const [squad] = await query(
+    'SELECT season_id, formation FROM squads WHERE squad_id = ? AND user_id = ?',
+    [id, DEMO_USER]);
+  if (!squad) throw new ApiError(404, `No squad with id ${id}`);
+
+  // Ask for a generous number per position so the browse panel has depth.
+  const rows = await callProc('sp_suggest_xi', [
+    squad.season_id, 12, 12, 12,
+    optionalInt(req.query.min_minutes, 'min_minutes') ?? 900,
+    id,
+  ]);
+
+  const position = req.query.position ? String(req.query.position).toUpperCase() : null;
+  res.json(position ? rows.filter((r) => r.position_code === position) : rows);
+}));
+
+// One click: fill the squad with the best available XI for its formation.
+scoutingRouter.post('/squads/:id/autofill', asyncHandler(async (req, res) => {
+  const id = requiredInt(req.params.id, 'id');
+  const [squad] = await query(
+    'SELECT season_id, formation FROM squads WHERE squad_id = ? AND user_id = ?',
+    [id, DEMO_USER]);
+  if (!squad) throw new ApiError(404, `No squad with id ${id}`);
+
+  const [{ taken }] = await query(
+    "SELECT COUNT(*) AS taken FROM squad_players WHERE squad_id = ? AND slot <> 'BENCH'",
+    [id]);
+  const room = 11 - taken;
+  if (room <= 0) {
+    throw new ApiError(409, 'The starting XI is already full. Remove a player first.');
+  }
+
+  const { def, mid, fwd } = parseFormation(squad.formation);
+  const suggestions = await callProc('sp_suggest_xi', [
+    squad.season_id, def, mid, fwd,
+    optionalInt(req.body?.min_minutes, 'min_minutes') ?? 900,
+    id,
+  ]);
+
+  let added = 0;
+  const skipped = [];
+  for (const player of suggestions.slice(0, room)) {
+    try {
+      await query(
+        'INSERT INTO squad_players (squad_id, player_season_id, slot) VALUES (?, ?, ?)',
+        [id, player.player_season_id, player.slot]);
+      added++;
+    } catch (err) {
+      // A trigger or duplicate key rejecting one pick should not abandon
+      // the rest of the XI.
+      if (err.sqlState === '45000' || err.code === 'ER_DUP_ENTRY') {
+        skipped.push(player.player_name);
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  res.json({ squad_id: id, added, skipped, formation: squad.formation });
 }));
 
 // NOTE: these must be declared before '/squads/:id'. Express matches

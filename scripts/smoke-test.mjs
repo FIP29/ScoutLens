@@ -324,6 +324,31 @@ await check('comparing a squad with itself is symmetric', async () => {
     'self-comparison has unequal expected goals');
 });
 
+await check('a squad can be auto-filled in one call', async () => {
+  const created = await call('POST', '/api/squads', {
+    name: `Smoke Auto ${stamp}`, season_id: seasonId, formation: '4-3-3',
+  });
+  const id = created.body.squad_id;
+  const { status, body } = await call('POST', `/api/squads/${id}/autofill`, {});
+  assert(status === 200, `status ${status}`);
+  assert(body.added === 11, `added ${body.added}, expected 11`);
+
+  const squad = await call('GET', `/api/squads/${id}`);
+  const slots = squad.body.players.map((p) => p.slot);
+  assert(slots.filter((s) => s === 'GK').length === 1, 'not exactly one keeper');
+  assert(slots.filter((s) => s === 'DEF').length === 4, 'not four defenders for a 4-3-3');
+  assert(slots.filter((s) => s === 'FWD').length === 3, 'not three forwards for a 4-3-3');
+  await call('DELETE', `/api/squads/${id}`);
+});
+
+await check('suggestions exclude players already in the squad', async () => {
+  const before = await call('GET', `/api/squads/${squadId}/suggestions`);
+  const inSquad = new Set(
+    (await call('GET', `/api/squads/${squadId}`)).body.players.map((p) => p.player_season_id));
+  assert(before.body.every((r) => !inSquad.has(r.player_season_id)),
+    'a player already in the squad was suggested');
+});
+
 // ---- cleanup ----------------------------------------------------------
 
 await check('clean up the smoke-test rows', async () => {

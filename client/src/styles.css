@@ -453,3 +453,14 @@ select.small { padding: 3px 6px; font-size: 11px; }
   background: var(--surface-2);
   color: var(--text-dim);
 }
+
+/* Long squad names must not push the actions column out of the panel. */
+.squad-name {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: inline-block;
+  vertical-align: bottom;
+  text-align: left;
+}

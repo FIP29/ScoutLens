@@ -126,12 +126,9 @@ export default function QuickSearch({ value, onChange, onSubmit, onClear, busy, 
       </div>
 
       <div className="row" style={{ marginTop: 14 }}>
-        <button className="primary" onClick={onSubmit} disabled={busy}>
-          {busy ? 'Searching…' : 'Search'}
-        </button>
-        <button className="ghost" onClick={onClear} disabled={busy}>Clear</button>
+        <button className="ghost" onClick={onClear} disabled={busy}>Clear all</button>
         <span style={{ fontSize: 12, color: 'var(--text-dim)', marginLeft: 'auto' }}>
-          Need something more specific? Use the advanced filters below.
+          {busy ? 'Searching…' : 'Results update as you type.'}
         </span>
       </div>
     </div>
