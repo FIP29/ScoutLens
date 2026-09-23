@@ -97,9 +97,16 @@ CREATE TABLE shortlist_entries (
   player_season_id INT UNSIGNED NOT NULL,
   rating           TINYINT UNSIGNED NULL,   -- scout's own 1-5 rating
   note             VARCHAR(300) NULL,
+  -- Where the player sits in the scouting pipeline. A shortlist is a
+  -- working document, so an entry moves between these as opinion forms.
+  status           ENUM('watching','shortlisted','priority','rejected')
+                     NOT NULL DEFAULT 'watching',
   added_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                                       ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (shortlist_id, player_season_id),
   KEY ix_se_ps (player_season_id),
+  KEY ix_se_status (shortlist_id, status),
   CONSTRAINT fk_se_shortlist FOREIGN KEY (shortlist_id)
     REFERENCES shortlists (shortlist_id) ON DELETE CASCADE,
   CONSTRAINT fk_se_ps FOREIGN KEY (player_season_id)

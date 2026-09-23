@@ -40,7 +40,7 @@ const FIELD_LABELS = {
 
 const label = (field) => FIELD_LABELS[field] ?? field;
 
-export default function FilterBuilder({ filters, onChange, onSubmit, onReset, busy }) {
+export default function FilterBuilder({ filters, onChange, onSubmit, onReset, busy, embedded = false }) {
   const { meta } = useMeta();
   const [newField, setNewField] = useState('goals');
   if (!meta) return null;
@@ -59,9 +59,12 @@ export default function FilterBuilder({ filters, onChange, onSubmit, onReset, bu
 
   const remove = (index) => onChange(filters.filter((_, i) => i !== index));
 
+  // When embedded inside another panel, drop the outer chrome so the page
+  // does not show a box inside a box.
+  const Wrapper = embedded ? 'div' : 'div';
   return (
-    <div className="panel">
-      <h3>Filter builder</h3>
+    <Wrapper className={embedded ? '' : 'panel'}>
+      {!embedded && <h3>Filter builder</h3>}
 
       {filters.length === 0 && (
         <p style={{ color: 'var(--text-dim)', fontSize: 13, marginTop: 0 }}>
@@ -162,6 +165,6 @@ export default function FilterBuilder({ filters, onChange, onSubmit, onReset, bu
         </button>
         <button className="ghost" onClick={onReset}>Reset</button>
       </div>
-    </div>
+    </Wrapper>
   );
 }

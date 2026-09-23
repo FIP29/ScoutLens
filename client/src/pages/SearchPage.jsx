@@ -1,17 +1,63 @@
-// The main scouting screen: build a filter, run it, page through results,
-// and push anything interesting onto a shortlist.
-import { useState } from 'react';
+// The main scouting screen.
+//
+// Two ways to search, one code path: the quick bar covers the six things
+// scouts look up constantly (name, country, league, position, season,
+// club), and the advanced builder handles everything else. Both are
+// translated into the same filter list and sent to POST /players/search,
+// so the server-side whitelist governs both equally.
+import { useEffect, useState } from 'react';
+import QuickSearch from '../components/QuickSearch.jsx';
 import FilterBuilder from '../components/FilterBuilder.jsx';
 import ResultsTable from '../components/ResultsTable.jsx';
 import { Loading, Message } from '../components/Bits.jsx';
 import { api } from '../lib/api.js';
 import { useMeta } from '../lib/MetaContext.jsx';
 
-const DEFAULT_FILTERS = [{ field: 'minutes', op: 'gte', value: '900' }];
+const EMPTY_QUICK = {
+  player_name: '',
+  nation_code: '',
+  league_id: '',
+  position_code: '',
+  season_id: '',
+  team_id: '',
+  min_minutes: '',
+};
+
+/** Turns the quick-search bar into the same filter objects the API expects. */
+function quickToFilters(quick) {
+  const filters = [];
+  if (quick.player_name.trim())
+    filters.push({ field: 'player_name', op: 'like', value: quick.player_name.trim() });
+  if (quick.nation_code)
+    filters.push({ field: 'nation_code', op: 'eq', value: quick.nation_code });
+  if (quick.league_id)
+    filters.push({ field: 'league_id', op: 'eq', value: Number(quick.league_id) });
+  if (quick.position_code)
+    filters.push({ field: 'position_code', op: 'eq', value: quick.position_code });
+  if (quick.season_id)
+    filters.push({ field: 'season_id', op: 'eq', value: Number(quick.season_id) });
+  if (quick.team_id)
+    filters.push({ field: 'team_id', op: 'eq', value: Number(quick.team_id) });
+  if (quick.min_minutes !== '')
+    filters.push({ field: 'minutes', op: 'gte', value: Number(quick.min_minutes) });
+  return filters;
+}
+
+/** Drops criteria the user started but never filled in. */
+function cleanAdvanced(filters) {
+  return filters.filter((f) =>
+    f.op === 'between'
+      ? f.value?.[0] !== '' && f.value?.[1] !== ''
+      : f.value !== '' && f.value !== null && f.value !== undefined);
+}
 
 export default function SearchPage() {
   const { meta } = useMeta();
-  const [filters, setFilters] = useState(DEFAULT_FILTERS);
+  const [quick, setQuick] = useState(EMPTY_QUICK);
+  const [advanced, setAdvanced] = useState([]);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [teams, setTeams] = useState([]);
+
   const [sort, setSort] = useState('total_points');
   const [dir, setDir] = useState('desc');
   const [page, setPage] = useState(1);
@@ -19,21 +65,42 @@ export default function SearchPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const [notice, setNotice] = useState(null);
+
   const [shortlists, setShortlists] = useState([]);
   const [targetList, setTargetList] = useState('');
+
+  // The club dropdown only makes sense once a league or season narrows it.
+  useEffect(() => {
+    if (!quick.league_id && !quick.season_id) {
+      setTeams([]);
+      return;
+    }
+    let cancelled = false;
+    const params = {};
+    if (quick.league_id) params.league_id = quick.league_id;
+    if (quick.season_id) params.season_id = quick.season_id;
+    api.teams(params)
+      .then((rows) => { if (!cancelled) setTeams(rows); })
+      .catch(() => { if (!cancelled) setTeams([]); });
+    return () => { cancelled = true; };
+  }, [quick.league_id, quick.season_id]);
+
+  useEffect(() => {
+    api.shortlists()
+      .then((lists) => {
+        setShortlists(lists);
+        if (lists.length) setTargetList((prev) => prev || String(lists[0].shortlist_id));
+      })
+      .catch(() => {});
+  }, []);
 
   async function run(nextPage = 1, nextSort = sort, nextDir = dir) {
     setBusy(true);
     setError(null);
     try {
-      // Blank values are dropped so a half-filled row never reaches the API.
-      const clean = filters.filter((f) =>
-        f.op === 'between'
-          ? f.value?.[0] !== '' && f.value?.[1] !== ''
-          : f.value !== '' && f.value !== null);
-
+      const filters = [...quickToFilters(quick), ...cleanAdvanced(advanced)];
       const data = await api.search({
-        filters: clean, sort: nextSort, dir: nextDir, page: nextPage, pageSize: 25,
+        filters, sort: nextSort, dir: nextDir, page: nextPage, pageSize: 25,
       });
       setResult(data);
       setPage(nextPage);
@@ -45,6 +112,9 @@ export default function SearchPage() {
     }
   }
 
+  // Show something useful on arrival rather than an empty screen.
+  useEffect(() => { if (meta) run(1); /* eslint-disable-next-line */ }, [meta]);
+
   function handleSort(key) {
     const nextDir = sort === key && dir === 'desc' ? 'asc' : 'desc';
     setSort(key);
@@ -52,12 +122,12 @@ export default function SearchPage() {
     run(1, key, nextDir);
   }
 
-  async function loadShortlists() {
-    try {
-      const lists = await api.shortlists();
-      setShortlists(lists);
-      if (lists.length && !targetList) setTargetList(String(lists[0].shortlist_id));
-    } catch { /* the shortlist panel is optional here */ }
+  function clearAll() {
+    setQuick(EMPTY_QUICK);
+    setAdvanced([]);
+    setNotice(null);
+    setError(null);
+    run(1);
   }
 
   async function addToShortlist(row) {
@@ -67,7 +137,11 @@ export default function SearchPage() {
     }
     try {
       await api.addToShortlist(targetList, { player_season_id: row.player_season_id });
-      setNotice({ kind: 'ok', text: `Added ${row.player_name} (${row.season_label}) to the shortlist.` });
+      const list = shortlists.find((s) => String(s.shortlist_id) === String(targetList));
+      setNotice({
+        kind: 'ok',
+        text: `Added ${row.player_name} (${row.season_label}) to “${list?.name ?? 'shortlist'}”.`,
+      });
     } catch (err) {
       setNotice({ kind: 'error', text: err.message });
     }
@@ -86,37 +160,59 @@ export default function SearchPage() {
         </p>
       </div>
 
-      <FilterBuilder
-        filters={filters}
-        onChange={setFilters}
+      <QuickSearch
+        value={quick}
+        onChange={setQuick}
         onSubmit={() => run(1)}
-        onReset={() => { setFilters(DEFAULT_FILTERS); setResult(null); }}
+        onClear={clearAll}
         busy={busy}
+        teams={teams}
       />
+
+      <div className="panel" style={{ paddingBlock: showAdvanced ? 16 : 10 }}>
+        <button
+          className="ghost small"
+          onClick={() => setShowAdvanced((v) => !v)}
+          aria-expanded={showAdvanced}
+        >
+          {showAdvanced ? '▾' : '▸'} Advanced filters
+          {advanced.length > 0 && <span className="tag" style={{ marginLeft: 8 }}>{advanced.length}</span>}
+        </button>
+
+        {showAdvanced && (
+          <div style={{ marginTop: 14 }}>
+            <FilterBuilder
+              filters={advanced}
+              onChange={setAdvanced}
+              onSubmit={() => run(1)}
+              onReset={() => setAdvanced([])}
+              busy={busy}
+              embedded
+            />
+          </div>
+        )}
+      </div>
 
       {error && <Message kind="error">{error}</Message>}
       {notice && <Message kind={notice.kind}>{notice.text}</Message>}
+
+      {busy && !result && <Loading>Searching 21,100 player-seasons…</Loading>}
 
       {result && (
         <div className="panel">
           <div className="row" style={{ justifyContent: 'space-between', marginBottom: 12 }}>
             <h3 style={{ margin: 0 }}>
-              {pagination.total.toLocaleString()} results
+              {pagination.total.toLocaleString()} {pagination.total === 1 ? 'result' : 'results'}
             </h3>
-            <div className="row">
-              <div className="field">
-                <label>Add to shortlist</label>
-                <select
-                  value={targetList}
-                  onFocus={loadShortlists}
-                  onChange={(e) => setTargetList(e.target.value)}
-                >
-                  <option value="">— select —</option>
-                  {shortlists.map((s) => (
-                    <option key={s.shortlist_id} value={s.shortlist_id}>{s.name}</option>
-                  ))}
-                </select>
-              </div>
+            <div className="field">
+              <label htmlFor="sl-target">Add to shortlist</label>
+              <select id="sl-target" value={targetList}
+                      onChange={(e) => setTargetList(e.target.value)}>
+                <option value="">— select —</option>
+                {shortlists.map((s) => (
+                  <option key={s.shortlist_id} value={s.shortlist_id}>{s.name}</option>
+                ))}
+              </select>
             </div>
           </div>
 
@@ -131,11 +227,9 @@ export default function SearchPage() {
                 onAction={addToShortlist}
               />
               <div className="pagination">
-                <button
-                  className="small"
-                  disabled={page <= 1}
-                  onClick={() => run(page - 1)}
-                >← Prev</button>
+                <button className="small" disabled={page <= 1} onClick={() => run(page - 1)}>
+                  ← Prev
+                </button>
                 <span>Page {pagination.page} of {pagination.totalPages}</span>
                 <button
                   className="small"

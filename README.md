@@ -26,18 +26,25 @@ JavaScript.
 
 ## Features
 
-- **Player search** — a filter builder over 21 whitelisted fields with
-  `is` / `at least` / `at most` / `between` / `is one of` / `contains`
-  operators, sortable and paginated results.
+- **Player search** — a quick bar for the everyday lookups (name, country,
+  league, position, season, club) backed by an advanced filter builder over 21
+  whitelisted fields with `is` / `at least` / `at most` / `between` /
+  `is one of` / `contains` operators, sortable and paginated.
 - **Player profiles** — career totals, season-by-season trend charts, and
   season-over-season deltas computed with SQL window functions.
 - **Head-to-head comparison** — any two player-seasons side by side with a
   per-90 radar, better values highlighted.
 - **Fantasy leaderboard** — points computed in MySQL from a configurable
   scoring ruleset; switching ruleset re-scores all 21,100 rows on the spot.
-- **Shortlists** — save scouting targets with a rating and notes.
-- **Squad builder** — pick a fantasy squad from one season; size, captaincy and
-  season-consistency rules enforced by database triggers.
+- **Shortlists** — a scouting pipeline, not a bookmark folder: every entry has a
+  status (watching → shortlisted → priority → rejected), a star rating and a
+  note, all editable in place, with SQL-computed summary aggregates, sorting,
+  status filtering, in-page player search and moving players between lists.
+- **Squad builder** — build as many squads as you like from any season; size,
+  captaincy and season-consistency rules enforced by database triggers.
+- **Head-to-head squad comparison** — rate two squads on attack and defence, then
+  derive win/draw/loss probabilities and a scoreline grid from a Poisson model
+  computed entirely in MySQL. See [the model](#the-squad-strength-model).
 - **League dashboard** — goals, squad ages and club counts per league per season.
 
 ## Quick start
@@ -90,6 +97,16 @@ npm run db:import   # data/*.csv       — loads 21,100 rows
 npm run db:logic    # db/logic/*.sql   — views, rules, procedures, triggers, scoring
 ```
 
+**Already have the database loaded?** Don't rebuild it — migrate instead, and
+keep your data along with any shortlists and squads you have saved:
+
+```bash
+npm run db:migrate
+```
+
+Each step in `db/migrations/` checks whether it has already been applied, so
+running it twice is harmless.
+
 Takes about 12 seconds end to end and prints what it loaded:
 
 ```
@@ -127,6 +144,51 @@ Verify the whole stack at any time:
 ```bash
 node scripts/smoke-test.mjs     # 24 checks across every route group
 ```
+
+## The squad strength model
+
+The head-to-head comparison is a rating model, not a prediction engine. It is
+worth knowing exactly what it does before quoting its numbers.
+
+**Step 1 — rate each player.** From season statistics, per 90 minutes so a
+900-minute player is comparable with a 3,000-minute one:
+
+| | |
+|---|---|
+| attack | `(goals + 0.7 x assists) / 90s` |
+| defence | `team goals conceded while on the pitch / 90s` |
+
+**Step 2 — rate each starting XI**, as the average of its players, divided by the
+league average. An average XI scores exactly 1.00 on both. Bench players are
+excluded. Both league averages are computed from the data
+(`v_league_baseline`), not hard-coded, so the model stays calibrated if the
+dataset is refreshed.
+
+**Step 3 — expected goals.**
+
+```
+expected goals for A  =  base  x  A.attack^0.60  x  B.defence^0.80
+```
+
+`base` is the league's real average of **1.39 goals conceded per team per 90**,
+taken from the data. The exponents damp extremes: a squad of eleven elite
+forwards can reach an attack index above 5, but no real team scores five times
+the league average. Since 1^n = 1, an average XI still yields exactly the
+baseline.
+
+**Step 4 — outcome probabilities.** Goals are modelled as a Poisson process,
+the standard treatment for football scorelines:
+
+```
+P(k goals) = e^-lambda x lambda^k / k!
+```
+
+Every scoreline from 0-0 to 8-8 is summed into win, draw or loss, then
+renormalised to 100%.
+
+**What it does not know:** form, fitness, tactics, injuries, home advantage, or
+that these players never actually played together. Read it as "which squad is
+stronger, and by how much" — not as a match prediction.
 
 ## Troubleshooting
 

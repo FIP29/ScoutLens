@@ -3,6 +3,7 @@
 // surfaces whatever the database says when a rule is broken.
 import { useEffect, useState } from 'react';
 import { Loading, Message, PositionChip, Stat } from '../components/Bits.jsx';
+import SquadCompare from '../components/SquadCompare.jsx';
 import { api } from '../lib/api.js';
 import { useMeta } from '../lib/MetaContext.jsx';
 import { int, num } from '../lib/format.js';
@@ -18,6 +19,7 @@ export default function SquadPage() {
   const [pick, setPick] = useState({ term: '', slot: 'MID', captain: false });
   const [error, setError] = useState(null);
   const [notice, setNotice] = useState(null);
+  const [tab, setTab] = useState('build');   // 'build' | 'compare'
 
   async function refresh() {
     try { setSquads(await api.squads()); } catch (err) { setError(err.message); }
@@ -120,14 +122,30 @@ export default function SquadPage() {
       <div className="page-head">
         <h2>Squad builder</h2>
         <p>
-          Build a fantasy squad from one season. Squad size, captaincy and season
-          consistency are enforced by triggers in MySQL.
+          Build as many squads as you like, then put two of them against each
+          other. Squad size, captaincy and season consistency are enforced by
+          triggers in MySQL.
         </p>
+      </div>
+
+      <div className="tabs" role="tablist">
+        <button role="tab" aria-selected={tab === 'build'}
+                className={tab === 'build' ? 'active' : ''}
+                onClick={() => setTab('build')}>Build squads</button>
+        <button role="tab" aria-selected={tab === 'compare'}
+                className={tab === 'compare' ? 'active' : ''}
+                onClick={() => setTab('compare')}>
+          Head to head{squads?.length ? ` (${squads.length})` : ''}
+        </button>
       </div>
 
       {error && <Message kind="error">{error}</Message>}
       {notice && <Message kind="ok">{notice}</Message>}
 
+      {tab === 'compare' && <SquadCompare squads={squads ?? []} />}
+
+      {tab === 'build' && (
+      <>
       <div className="grid cols-2">
         <div className="panel">
           <h3>New squad</h3>
@@ -323,6 +341,8 @@ export default function SquadPage() {
             )}
           </div>
         </>
+      )}
+      </>
       )}
     </>
   );

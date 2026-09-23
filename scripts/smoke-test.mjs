@@ -223,11 +223,113 @@ await check('duplicate shortlist name is rejected', async () => {
   assert(status === 409, `expected 409, got ${status}`);
 });
 
+// ---- quick search, shortlist pipeline, squad comparison ---------------
+
+await check('search by country, league and position together', async () => {
+  const { body } = await call('POST', '/api/players/search', {
+    filters: [
+      { field: 'nation_code', op: 'eq', value: 'BRA' },
+      { field: 'position_code', op: 'eq', value: 'FW' },
+      { field: 'minutes', op: 'gte', value: 900 },
+    ],
+    pageSize: 10,
+  });
+  assert(body.rows.length > 0, 'no Brazilian forwards found');
+  assert(body.rows.every((r) => r.nation_code === 'BRA'), 'a non-Brazilian slipped through');
+  assert(body.rows.every((r) => r.position_code === 'FW'), 'a non-forward slipped through');
+});
+
+await check('shortlist entry carries a pipeline status', async () => {
+  const { status, body } = await call('POST', `/api/shortlists/${shortlistId}/entries`, {
+    player_season_id: rightId, status: 'shortlisted',
+  });
+  assert(status === 201, `status ${status}`);
+  assert(body.status === 'shortlisted', `got status ${body.status}`);
+});
+
+await check('an entry can be promoted with PATCH', async () => {
+  const { status } = await call('PATCH', `/api/shortlists/${shortlistId}/entries/${rightId}`, {
+    status: 'priority', rating: 5, note: 'smoke',
+  });
+  assert(status === 200, `status ${status}`);
+  const { body } = await call('GET', `/api/shortlists/${shortlistId}`);
+  const entry = body.entries.find((e) => e.player_season_id === rightId);
+  assert(entry.status === 'priority', `status is ${entry.status}`);
+  assert(entry.rating === 5, `rating is ${entry.rating}`);
+});
+
+await check('an invalid status is rejected', async () => {
+  const { status } = await call('PATCH', `/api/shortlists/${shortlistId}/entries/${rightId}`, {
+    status: 'definitely-not-valid',
+  });
+  assert(status === 400, `expected 400, got ${status}`);
+});
+
+await check('shortlist summary aggregates in SQL', async () => {
+  const { body } = await call('GET', `/api/shortlists/${shortlistId}`);
+  assert(body.summary, 'no summary returned');
+  assert(body.summary.total === body.entries.length,
+    `summary total ${body.summary.total} != ${body.entries.length} entries`);
+  assert(Array.isArray(body.byPosition), 'no position breakdown');
+});
+
+await check('shortlist entries can be sorted', async () => {
+  const { body } = await call('GET', `/api/shortlists/${shortlistId}?sort=player_name&dir=asc`);
+  const names = body.entries.map((e) => e.player_name);
+  const sorted = [...names].sort((x, y) => x.localeCompare(y));
+  assert(JSON.stringify(names) === JSON.stringify(sorted), 'entries not sorted by name');
+});
+
+let squadB;
+await check('a second squad can be built for comparison', async () => {
+  const created = await call('POST', '/api/squads', {
+    name: `Smoke XI B ${stamp}`, season_id: seasonId, formation: '4-4-2',
+  });
+  assert(created.status === 201, `status ${created.status}`);
+  squadB = created.body.squad_id;
+
+  const search = await call('POST', '/api/players/search', {
+    filters: [{ field: 'season_id', op: 'eq', value: seasonId }],
+    sort: 'total_points', dir: 'asc', pageSize: 5,
+  });
+  for (const row of search.body.rows.slice(0, 3)) {
+    await call('POST', `/api/squads/${squadB}/players`, {
+      player_season_id: row.player_season_id, slot: 'MID',
+    });
+  }
+});
+
+await check('squad strength is rated', async () => {
+  const { body } = await call('GET', `/api/squads/${squadId}/strength`);
+  assert(body.attack_index > 0, 'no attack index');
+  assert(body.defence_index > 0, 'no defence index');
+});
+
+await check('head-to-head probabilities sum to 100', async () => {
+  const { body } = await call('GET', `/api/squads/compare?a=${squadId}&b=${squadB}`);
+  const c = body.comparison;
+  const total = c.pct_a_win + c.pct_draw + c.pct_b_win;
+  assert(Math.abs(total - 100) < 0.2, `probabilities sum to ${total}, not 100`);
+  assert(c.expected_goals_a > 0 && c.expected_goals_b > 0, 'expected goals missing');
+  assert(body.grid.length === 36, `grid has ${body.grid.length} cells, expected 36`);
+  assert(body.lineups.a.length > 0 && body.lineups.b.length > 0, 'lineups missing');
+});
+
+await check('comparing a squad with itself is symmetric', async () => {
+  const { body } = await call('GET', `/api/squads/compare?a=${squadId}&b=${squadId}`);
+  const c = body.comparison;
+  assert(Math.abs(c.pct_a_win - c.pct_b_win) < 0.01,
+    `self-comparison is lopsided: ${c.pct_a_win} vs ${c.pct_b_win}`);
+  assert(Math.abs(c.expected_goals_a - c.expected_goals_b) < 0.01,
+    'self-comparison has unequal expected goals');
+});
+
 // ---- cleanup ----------------------------------------------------------
 
 await check('clean up the smoke-test rows', async () => {
   const a = await call('DELETE', `/api/squads/${squadId}`);
   const b = await call('DELETE', `/api/shortlists/${shortlistId}`);
+  if (squadB) await call('DELETE', `/api/squads/${squadB}`);
   assert(a.status === 204 && b.status === 204, `statuses ${a.status}/${b.status}`);
 });
 

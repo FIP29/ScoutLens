@@ -34,15 +34,26 @@ export const api = {
   activateRuleset: (id) => request(`/rulesets/${id}/activate`, { method: 'POST' }),
 
   shortlists: () => request('/shortlists'),
-  shortlist: (id) => request(`/shortlists/${id}`),
+  shortlist: (id, params = {}) => {
+    const qs = new URLSearchParams(
+      Object.entries(params).filter(([, v]) => v !== '' && v != null));
+    return request(`/shortlists/${id}${qs.toString() ? `?${qs}` : ''}`);
+  },
   createShortlist: (body) => request('/shortlists', { method: 'POST', body }),
   deleteShortlist: (id) => request(`/shortlists/${id}`, { method: 'DELETE' }),
   addToShortlist: (id, body) => request(`/shortlists/${id}/entries`, { method: 'POST', body }),
   removeFromShortlist: (id, psId) =>
     request(`/shortlists/${id}/entries/${psId}`, { method: 'DELETE' }),
+  updateShortlistEntry: (id, psId, body) =>
+    request(`/shortlists/${id}/entries/${psId}`, { method: 'PATCH', body }),
+  moveShortlistEntry: (id, psId, targetId) =>
+    request(`/shortlists/${id}/entries/${psId}/move`,
+      { method: 'POST', body: { target_shortlist_id: targetId } }),
 
   squads: () => request('/squads'),
   squad: (id) => request(`/squads/${id}`),
+  squadStrength: (id) => request(`/squads/${id}/strength`),
+  compareSquads: (a, b) => request(`/squads/compare?a=${a}&b=${b}`),
   createSquad: (body) => request('/squads', { method: 'POST', body }),
   deleteSquad: (id) => request(`/squads/${id}`, { method: 'DELETE' }),
   addToSquad: (id, body) => request(`/squads/${id}/players`, { method: 'POST', body }),

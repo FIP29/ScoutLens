@@ -81,8 +81,18 @@ Typeahead over career totals. Needs at least 2 characters, returns up to 15.
 | `POST /shortlists` | `{ name, notes? }` → 201 |
 | `GET /shortlists/:id` | the list plus its entries, joined to current stats |
 | `DELETE /shortlists/:id` | 204 |
-| `POST /shortlists/:id/entries` | `{ player_season_id, rating?, note? }`; re-posting updates the existing entry |
+| `POST /shortlists/:id/entries` | `{ player_season_id, rating?, note?, status? }`; re-posting updates the existing entry |
+| `PATCH /shortlists/:id/entries/:playerSeasonId` | Update `rating`, `note` and/or `status` on an existing entry |
+| `POST /shortlists/:id/entries/:playerSeasonId/move` | `{ target_shortlist_id }` — move a player to another list, keeping the assessment |
 | `DELETE /shortlists/:id/entries/:playerSeasonId` | 204 |
+
+`GET /shortlists/:id` also accepts `?sort=` (`added_at`, `rating`, `status`,
+`player_name`, `age_years`, `minutes`, `goals`, `assists`, `total_points`),
+`?dir=asc|desc` and `?status=` to filter by pipeline stage. It returns
+`{ ...shortlist, entries, summary, byPosition }` where `summary` and
+`byPosition` are aggregated in SQL.
+
+`status` is one of `watching`, `shortlisted`, `priority`, `rejected`.
 
 `rating` must be 1–5; the database enforces this with a `CHECK` constraint and
 the API validates it up front.
@@ -97,6 +107,12 @@ the API validates it up front.
 | `DELETE /squads/:id` | 204 |
 | `POST /squads/:id/players` | `{ player_season_id, slot, is_captain? }`; slot is `GK`/`DEF`/`MID`/`FWD`/`BENCH` |
 | `DELETE /squads/:id/players/:playerSeasonId` | 204 |
+| `GET /squads/:id/strength` | Attack and defence indices for one squad |
+| `GET /squads/compare?a=&b=` | Head to head: `{ comparison, grid, lineups }` — ratings, expected goals, win/draw/loss percentages, the 6x6 scoreline grid and both XIs |
+
+`/squads/compare` is declared before `/squads/:id` in the router: Express matches
+routes in order, so a literal path registered after a parameterised one would
+never be reached.
 
 Adding a player can fail with `409` and one of these messages, raised by
 database triggers rather than application code:

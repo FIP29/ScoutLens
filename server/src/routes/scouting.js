@@ -43,26 +43,148 @@ scoutingRouter.post('/shortlists', asyncHandler(async (req, res) => {
   }
 }));
 
+// Columns a shortlist may be sorted by. Same whitelist discipline as the
+// player search: the client sends a name, never a fragment of SQL.
+const SHORTLIST_SORTS = {
+  added_at: 'e.added_at',
+  rating: 'e.rating',
+  status: 'e.status',
+  player_name: 'vps.player_name',
+  age_years: 'vps.age_years',
+  minutes: 'vps.minutes',
+  goals: 'vps.goals',
+  assists: 'vps.assists',
+  total_points: 'fp.total_points',
+};
+
+const ENTRY_STATUSES = ['watching', 'shortlisted', 'priority', 'rejected'];
+
 scoutingRouter.get('/shortlists/:id', asyncHandler(async (req, res) => {
   const id = requiredInt(req.params.id, 'id');
   const [shortlist] = await query(
     'SELECT * FROM shortlists WHERE shortlist_id = ? AND user_id = ?', [id, DEMO_USER]);
   if (!shortlist) throw new ApiError(404, `No shortlist with id ${id}`);
 
+  const sortColumn = SHORTLIST_SORTS[req.query.sort] || SHORTLIST_SORTS.added_at;
+  const direction = String(req.query.dir).toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+
+  const params = [id];
+  let statusFilter = '';
+  if (req.query.status) {
+    const status = String(req.query.status);
+    if (!ENTRY_STATUSES.includes(status)) {
+      throw new ApiError(400, `status must be one of ${ENTRY_STATUSES.join(', ')}`);
+    }
+    statusFilter = 'AND e.status = ?';
+    params.push(status);
+  }
+
   const entries = await query(
-    `SELECT e.player_season_id, e.rating, e.note, e.added_at,
-            vps.player_name, vps.team_name, vps.league_name, vps.season_label,
-            vps.position_code, vps.age_years, vps.minutes, vps.goals, vps.assists,
-            fp.total_points
+    `SELECT e.player_season_id, e.rating, e.note, e.status, e.added_at, e.updated_at,
+            vps.player_id, vps.player_name, vps.team_name, vps.league_name,
+            vps.season_label, vps.position_code, vps.nation_code, vps.flag_code,
+            vps.age_years, vps.minutes, vps.goals, vps.assists, vps.goals_per90,
+            vps.clean_sheets, vps.saves, fp.total_points, fp.points_per90
        FROM shortlist_entries e
        JOIN v_player_season vps ON vps.player_season_id = e.player_season_id
        LEFT JOIN fantasy_points fp
          ON fp.player_season_id = e.player_season_id
         AND fp.ruleset_id = fn_active_ruleset()
-      WHERE e.shortlist_id = ?
-      ORDER BY e.added_at DESC`, [id]);
+      WHERE e.shortlist_id = ? ${statusFilter}
+      ORDER BY ${sortColumn} IS NULL, ${sortColumn} ${direction}, vps.player_name ASC`,
+    params);
 
-  res.json({ ...shortlist, entries });
+  // Aggregates for the summary panel, computed in SQL rather than by
+  // reducing the rows in JavaScript.
+  const [summary] = await query(
+    `SELECT COUNT(*) AS total,
+            ROUND(AVG(vps.age_years), 1)     AS avg_age,
+            SUM(vps.goals)                   AS goals,
+            SUM(vps.assists)                 AS assists,
+            SUM(vps.minutes)                 AS minutes,
+            ROUND(AVG(fp.total_points), 1)   AS avg_points,
+            ROUND(AVG(e.rating), 1)          AS avg_rating,
+            SUM(e.status = 'priority')       AS priority,
+            SUM(e.status = 'shortlisted')    AS shortlisted,
+            SUM(e.status = 'watching')       AS watching,
+            SUM(e.status = 'rejected')       AS rejected,
+            COUNT(DISTINCT vps.nation_code)  AS nations,
+            COUNT(DISTINCT vps.team_id)      AS clubs
+       FROM shortlist_entries e
+       JOIN v_player_season vps ON vps.player_season_id = e.player_season_id
+       LEFT JOIN fantasy_points fp
+         ON fp.player_season_id = e.player_season_id
+        AND fp.ruleset_id = fn_active_ruleset()
+      WHERE e.shortlist_id = ?`, [id]);
+
+  const byPosition = await query(
+    `SELECT COALESCE(vps.position_code, '—') AS position_code, COUNT(*) AS n
+       FROM shortlist_entries e
+       JOIN v_player_season vps ON vps.player_season_id = e.player_season_id
+      WHERE e.shortlist_id = ?
+      GROUP BY vps.position_code ORDER BY n DESC`, [id]);
+
+  res.json({ ...shortlist, entries, summary, byPosition });
+}));
+
+// Update a scout's own assessment of a player already on the list.
+scoutingRouter.patch('/shortlists/:id/entries/:playerSeasonId', asyncHandler(async (req, res) => {
+  const id = requiredInt(req.params.id, 'id');
+  const psId = requiredInt(req.params.playerSeasonId, 'playerSeasonId');
+
+  const sets = [];
+  const params = [];
+
+  if ('rating' in (req.body ?? {})) {
+    const rating = req.body.rating === null ? null : requiredInt(req.body.rating, 'rating');
+    if (rating !== null && (rating < 1 || rating > 5)) {
+      throw new ApiError(400, 'rating must be between 1 and 5');
+    }
+    sets.push('rating = ?');
+    params.push(rating);
+  }
+  if ('note' in (req.body ?? {})) {
+    sets.push('note = ?');
+    params.push(req.body.note ? String(req.body.note).slice(0, 300) : null);
+  }
+  if ('status' in (req.body ?? {})) {
+    if (!ENTRY_STATUSES.includes(req.body.status)) {
+      throw new ApiError(400, `status must be one of ${ENTRY_STATUSES.join(', ')}`);
+    }
+    sets.push('status = ?');
+    params.push(req.body.status);
+  }
+  if (!sets.length) throw new ApiError(400, 'Nothing to update: send rating, note or status');
+
+  params.push(id, psId);
+  const result = await query(
+    `UPDATE shortlist_entries SET ${sets.join(', ')}
+      WHERE shortlist_id = ? AND player_season_id = ?`, params);
+  if (!result.affectedRows) throw new ApiError(404, 'That player is not on the shortlist');
+
+  res.json({ shortlist_id: id, player_season_id: psId, updated: sets.length });
+}));
+
+// Move a player from one shortlist to another, keeping the assessment.
+scoutingRouter.post('/shortlists/:id/entries/:playerSeasonId/move', asyncHandler(async (req, res) => {
+  const from = requiredInt(req.params.id, 'id');
+  const psId = requiredInt(req.params.playerSeasonId, 'playerSeasonId');
+  const to = requiredInt(req.body?.target_shortlist_id, 'target_shortlist_id');
+  if (from === to) throw new ApiError(400, 'Source and target shortlist are the same');
+
+  const [target] = await query(
+    'SELECT shortlist_id FROM shortlists WHERE shortlist_id = ? AND user_id = ?',
+    [to, DEMO_USER]);
+  if (!target) throw new ApiError(404, `No shortlist with id ${to}`);
+
+  // One statement, so the player can never exist in both lists or neither.
+  const result = await query(
+    `UPDATE IGNORE shortlist_entries SET shortlist_id = ?
+      WHERE shortlist_id = ? AND player_season_id = ?`, [to, from, psId]);
+  if (!result.affectedRows) {
+    throw new ApiError(409, 'That player is not on this list, or is already on the target list');
+  }
+  res.json({ moved: psId, from, to });
 }));
 
 scoutingRouter.post('/shortlists/:id/entries', asyncHandler(async (req, res) => {
@@ -73,14 +195,19 @@ scoutingRouter.post('/shortlists/:id/entries', asyncHandler(async (req, res) => 
     throw new ApiError(400, 'rating must be between 1 and 5');
   }
   const note = req.body?.note ? String(req.body.note).slice(0, 300) : null;
+  const status = req.body?.status ?? 'watching';
+  if (!ENTRY_STATUSES.includes(status)) {
+    throw new ApiError(400, `status must be one of ${ENTRY_STATUSES.join(', ')}`);
+  }
 
   try {
     await query(
-      `INSERT INTO shortlist_entries (shortlist_id, player_season_id, rating, note)
-            VALUES (?, ?, ?, ?)
-       ON DUPLICATE KEY UPDATE rating = VALUES(rating), note = VALUES(note)`,
-      [id, playerSeasonId, rating, note]);
-    res.status(201).json({ shortlist_id: id, player_season_id: playerSeasonId, rating, note });
+      `INSERT INTO shortlist_entries (shortlist_id, player_season_id, rating, note, status)
+            VALUES (?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE rating = VALUES(rating), note = VALUES(note),
+                               status = VALUES(status)`,
+      [id, playerSeasonId, rating, note, status]);
+    res.status(201).json({ shortlist_id: id, player_season_id: playerSeasonId, rating, note, status });
   } catch (err) {
     if (err.code === 'ER_NO_REFERENCED_ROW_2') {
       throw new ApiError(404, 'That shortlist or player-season does not exist');
@@ -138,6 +265,60 @@ scoutingRouter.post('/squads', asyncHandler(async (req, res) => {
     if (err.code === 'ER_NO_REFERENCED_ROW_2') throw new ApiError(404, 'That season does not exist');
     throw err;
   }
+}));
+
+// NOTE: these must be declared before '/squads/:id'. Express matches
+// routes in order, so a literal path registered after a parameterised
+// one is never reached - '/squads/compare' would bind id='compare'.
+// -------------------------- squad comparison ---------------------------
+
+// Ratings for one squad on their own.
+scoutingRouter.get('/squads/:id/strength', asyncHandler(async (req, res) => {
+  const id = requiredInt(req.params.id, 'id');
+  const [strength] = await callProc('sp_squad_strength', [id]);
+  if (!strength) {
+    throw new ApiError(404,
+      'No ratings for that squad - it needs at least one non-bench player.');
+  }
+  res.json(strength);
+}));
+
+// Head to head between two saved squads.
+scoutingRouter.get('/squads/compare', asyncHandler(async (req, res) => {
+  const a = requiredInt(req.query.a, 'a');
+  const b = requiredInt(req.query.b, 'b');
+
+  const [comparison] = await callProc('sp_compare_squads', [a, b]);
+  if (!comparison) {
+    throw new ApiError(404,
+      'Could not rate both squads. Each needs at least one player outside the bench.');
+  }
+
+  const [grid, lineups] = await Promise.all([
+    callProc('sp_squad_scoreline_grid', [a, b]),
+    query(
+      `SELECT sp.squad_id, sp.slot, sp.is_captain,
+              vps.player_name, vps.position_code, vps.team_name,
+              vps.minutes, vps.goals, vps.assists,
+              vs.attack_per90, vs.conceded_per90, fp.total_points
+         FROM squad_players sp
+         JOIN v_player_season vps  ON vps.player_season_id = sp.player_season_id
+         JOIN v_player_strength vs ON vs.player_season_id  = sp.player_season_id
+         LEFT JOIN fantasy_points fp
+           ON fp.player_season_id = sp.player_season_id
+          AND fp.ruleset_id = fn_active_ruleset()
+        WHERE sp.squad_id IN (?, ?) AND sp.slot <> 'BENCH'
+        ORDER BY sp.squad_id, vs.attack_per90 DESC`, [a, b]),
+  ]);
+
+  res.json({
+    comparison,
+    grid,
+    lineups: {
+      a: lineups.filter((r) => r.squad_id === a),
+      b: lineups.filter((r) => r.squad_id === b),
+    },
+  });
 }));
 
 scoutingRouter.get('/squads/:id', asyncHandler(async (req, res) => {
