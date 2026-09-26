@@ -119,6 +119,8 @@ CREATE TABLE player_seasons (
   PRIMARY KEY (player_season_id),
   UNIQUE KEY uq_player_team_season (player_id, team_id, season_id),
   KEY ix_ps_season_league (season_id, league_id),
+  -- The above-average comparison groups peers by exactly this triple.
+  KEY ix_ps_peer_group (season_id, league_id, primary_position),
   KEY ix_ps_team_season (team_id, season_id),
   KEY ix_ps_player (player_id),
   KEY ix_ps_position (primary_position),

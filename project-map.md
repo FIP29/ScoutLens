@@ -3,16 +3,16 @@
 A file-by-file guide to the repository: what each file is for, and how it connects
 to the rest of the system.
 
-**78 tracked files** across five layers:
+**92 tracked files** across five layers:
 
 | Layer | Location | Role |
 |---|---|---|
 | Data source | `data/` | The raw FBref CSV the database is built from |
-| Database | `db/schema/`, `db/logic/`, `db/seed/` | DDL, views/routines/triggers, and generated seed data |
+| Database | `db/schema/`, `db/logic/`, `db/migrations/`, `db/seed/` | DDL, views/routines/triggers, in-place upgrades, and generated seed data |
 | ETL | `etl/` | Converts the CSV into the database, and the database back into `.sql` |
 | API | `server/` | Express REST layer over MySQL |
 | Web client | `client/` | React scouting interface |
-| Tooling & docs | `scripts/`, `docs/`, root | Launcher, smoke tests, documentation |
+| Tooling & docs | `scripts/`, `docs/`, root | Launcher, admin setup, smoke tests, documentation |
 
 ## How the layers connect
 
@@ -117,6 +117,12 @@ untouched by the ETL, so a re-import never destroys a user's saved work.
 
 Applied after data is loaded, because several of these files read from populated tables.
 
+### `db/schema/04_admin.sql`
+The `admins` table: `id`, `email` (unique), `password_hash` (bcrypt, `CHAR(60)`),
+`created_at`. A `CHECK (id = 1)` constraint makes it a single-row table, so there can
+only ever be one admin. Written to by `scripts/admin-set.mjs`, read by
+`server/src/lib/auth.js` and `routes/admin.js`.
+
 ### `db/logic/01_views.sql`
 Defines `v_player_season` — the flat, fully-labelled join across all eight core
 tables that nearly every API query reads from — and `v_fantasy_stat_facts`, which
@@ -156,6 +162,30 @@ Final setup step: seeds the demo scout account (`users.user_id = 1`) and calls
 `sp_recalculate_fantasy_points` for both rulesets so the app has scores on first load.
 Depends on every other file in `db/logic/`; the demo user id is the one hard-coded as
 `DEMO_USER` in `server/src/routes/scouting.js`.
+
+### `db/logic/07_squad_strength.sql`
+The head-to-head squad model: player attack/defence ratings, league baselines
+(`v_league_baseline`), and `sp_compare_squads`, which turns two XIs into expected
+goals and Poisson win/draw/loss probabilities. Read by `routes/scouting.js`.
+
+### `db/logic/08_admin.sql`
+`sp_recalculate_player_season_points(id)` — re-scores one player-season under every
+ruleset, with the same rule precedence as the full `sp_recalculate_fantasy_points`.
+Called by `routes/admin.js` after every add or edit so the leaderboard stays correct
+without re-scoring all 21,100 rows.
+
+---
+
+## `db/migrations/` — in-place upgrades
+
+Run by `npm run db:migrate` (then `db/logic/` again). Each step checks
+`information_schema` before changing anything, so it is safe to run twice, and none
+of them drop data.
+
+| File | Adds |
+|---|---|
+| `db/migrations/001_search_shortlists_squads.sql` | Shortlist status/rating columns, multiple squads, search indexes |
+| `db/migrations/002_admin.sql` | The `admins` table and the `ix_ps_peer_group (season_id, league_id, primary_position)` index used by the peer-average subquery |
 
 ---
 
@@ -272,6 +302,12 @@ resolved column names reach the SQL string and every value travels as a `?`
 placeholder. Consumed by `routes/players.js`; also published through `routes/meta.js`
 so the React filter builder renders from the same grammar.
 
+### `server/src/lib/auth.js`
+Admin sessions. Reads `JWT_SECRET` / `JWT_EXPIRES_IN` from the environment, issues a
+JWT (HS256, fixed issuer and audience) in an httpOnly, SameSite=Strict cookie, and
+exports `requireAdmin`, the middleware that guards every admin write. It answers 401
+for a missing, expired or tampered token and 503 if no secret is configured.
+
 ### `server/src/routes/meta.js`
 Serves the reference data every dropdown needs — seasons, leagues, positions,
 nations, rulesets, row counts — plus the filter grammar itself, and a `/meta/teams`
@@ -291,6 +327,21 @@ Head-to-head comparison, the fantasy leaderboard, league and club dashboards, an
 ruleset listing/activation (which re-scores all 21,100 rows).
 Mostly a thin wrapper over `sp_compare_players`, `sp_leaderboard`,
 `sp_team_season_summary`, `sp_recalculate_fantasy_points` and the analytics views.
+
+### `server/src/routes/peers.js`
+Public "above-average performers" endpoint. One query JOINs `player_seasons`,
+`players`, `teams`, `leagues`, `seasons`, `positions` and the stat table, computes the
+peer-group average (same league, position and season) with a correlated subquery,
+and keeps rows with `HAVING value > peer_avg`. The stat is chosen from a whitelist
+(`STATS`), the same pattern as `filters.js`.
+
+### `server/src/routes/admin.js`
+Login / logout / session probe (rate-limited, bcrypt compare, identical failure
+message for wrong email and wrong password), then — behind `requireAdmin` — add,
+update and hard-delete players. Writes run inside `withTransaction` from
+`db/pool.js` and re-score the row with `sp_recalculate_player_season_points`.
+Delete is a single `DELETE FROM players`; the `ON DELETE CASCADE` foreign keys
+remove the seasons, stats, fantasy points, shortlist entries and squad slots.
 
 ### `server/src/routes/scouting.js`
 The write side: CRUD for shortlists and their entries, squads and their players, and
@@ -412,6 +463,17 @@ them to a slot, optionally name a captain, and see projected points.
 Deliberately restricts candidate search to the squad's own season to match the
 database trigger, and surfaces trigger rejections verbatim when a rule is broken.
 
+### `client/src/pages/AboveAveragePage.jsx`
+Position, stat, season, league and minutes pickers that re-query as they change, and
+a table sortable on every column. Suggests the stats that suit each position
+(no "saves" for forwards) with a toggle to show them all.
+
+### `client/src/pages/AdminPage.jsx`
+The admin area behind the separate **Admin** link in the top bar: a sign-in form,
+then tabs to add a player, edit identity or any season, and delete a player with a
+two-step confirmation that reports what the cascade removed. Falls back to the
+sign-in form whenever the API answers 401.
+
 ---
 
 ## `scripts/` — tooling
@@ -424,10 +486,17 @@ Spawns them as direct `node` processes rather than through `npm run`, because an
 servers with their ports still bound. Checks that dependencies are installed and says
 so plainly if not.
 
+### `scripts/admin-set.mjs`
+`npm run admin:set` — asks for the admin email and a hidden password (typed twice),
+hashes it with bcrypt and writes the single `admins` row, replacing it if one exists.
+The password never appears on the command line or in shell history.
+
 ### `scripts/smoke-test.mjs`
-End-to-end API check: 24 assertions across every route group, including the injection
-rejections, the trigger violations, and the captain-doubling projection. Cleans up
-the rows it creates and exits non-zero on the first failure.
+End-to-end API check: 44 assertions across every route group, including the injection
+rejections, the trigger violations, the peer-average rule and the locked admin routes.
+Given `SMOKE_ADMIN_EMAIL` / `SMOKE_ADMIN_PASSWORD` it also signs in and adds, edits and
+deletes a throwaway player. Cleans up the rows it creates and exits non-zero if any
+check fails.
 Depends only on a running API; the fastest way to confirm the whole stack works.
 
 ---

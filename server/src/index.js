@@ -10,16 +10,21 @@
 import { pool } from './db/pool.js';
 import express from 'express';
 import cors from 'cors';
+import cookieParser from 'cookie-parser';
 import { metaRouter } from './routes/meta.js';
 import { playersRouter } from './routes/players.js';
 import { analyticsRouter } from './routes/analytics.js';
 import { scoutingRouter } from './routes/scouting.js';
+import { peersRouter } from './routes/peers.js';
+import { adminRouter } from './routes/admin.js';
 
 const app = express();
 const PORT = Number(process.env.PORT || 4000);
 
 app.use(cors());
 app.use(express.json({ limit: '256kb' }));
+// The admin session lives in an httpOnly cookie; parse it for the admin routes.
+app.use(cookieParser());
 
 // Liveness plus a quick database round trip, so `curl /api/health` tells
 // you whether the API is up *and* whether MySQL is reachable.
@@ -33,8 +38,12 @@ app.get('/api/health', async (_req, res) => {
   }
 });
 
+// Admin first: every route under /api/admin except login, logout and the
+// session probe is guarded by requireAdmin (see routes/admin.js).
+app.use('/api/admin', adminRouter);
 app.use('/api/meta', metaRouter);
 app.use('/api/players', playersRouter);
+app.use('/api/peers', peersRouter);
 app.use('/api', analyticsRouter);
 app.use('/api', scoutingRouter);
 

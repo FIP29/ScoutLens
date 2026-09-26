@@ -7,10 +7,13 @@ import LeaderboardPage from './pages/LeaderboardPage.jsx';
 import DashboardPage from './pages/DashboardPage.jsx';
 import ShortlistPage from './pages/ShortlistPage.jsx';
 import SquadPage from './pages/SquadPage.jsx';
+import AboveAveragePage from './pages/AboveAveragePage.jsx';
+import AdminPage from './pages/AdminPage.jsx';
 
 const NAV = [
   ['/dashboard', 'Dashboard'],
   ['/search', 'Player search'],
+  ['/above-average', 'Above average'],
   ['/compare', 'Compare'],
   ['/leaderboard', 'Fantasy board'],
   ['/shortlists', 'Shortlists'],
@@ -31,6 +34,12 @@ export default function App() {
               <NavLink key={to} to={to}>{label}</NavLink>
             ))}
           </nav>
+
+          {/* Set apart from the public pages: the only door into the
+              admin tools, and the only part of the app behind a login. */}
+          <nav className="nav nav-admin" aria-label="Administration">
+            <NavLink to="/admin">Admin</NavLink>
+          </nav>
         </aside>
 
         <main className="main">
@@ -43,6 +52,8 @@ export default function App() {
             <Route path="/leaderboard" element={<LeaderboardPage />} />
             <Route path="/shortlists" element={<ShortlistPage />} />
             <Route path="/squads" element={<SquadPage />} />
+            <Route path="/above-average" element={<AboveAveragePage />} />
+            <Route path="/admin" element={<AdminPage />} />
             <Route path="*" element={<div className="empty">Page not found.</div>} />
           </Routes>
         </main>

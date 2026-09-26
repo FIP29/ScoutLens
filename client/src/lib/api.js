@@ -12,12 +12,32 @@ async function request(path, options = {}) {
 
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(payload.error || `Request failed (${response.status})`);
+    const error = new Error(payload.error || `Request failed (${response.status})`);
+    error.status = response.status;
+    throw error;
   }
   return payload;
 }
 
 export const api = {
+  // above-average performers (public)
+  peerStats: () => request('/peers/stats'),
+  aboveAverage: (params) => request(`/peers/above-average?${new URLSearchParams(
+    Object.entries(params).filter(([, v]) => v !== '' && v != null))}`),
+
+  // admin - the session cookie is httpOnly and same-origin, so fetch sends
+  // it automatically; nothing here ever touches the token itself
+  adminSession: () => request('/admin/session'),
+  adminLogin: (email, password) =>
+    request('/admin/login', { method: 'POST', body: { email, password } }),
+  adminLogout: () => request('/admin/logout', { method: 'POST' }),
+  adminPlayer: (id) => request(`/admin/players/${id}`),
+  adminCreatePlayer: (body) => request('/admin/players', { method: 'POST', body }),
+  adminUpdatePlayer: (id, body) => request(`/admin/players/${id}`, { method: 'PUT', body }),
+  adminUpdateSeason: (id, body) =>
+    request(`/admin/player-seasons/${id}`, { method: 'PUT', body }),
+  adminDeletePlayer: (id) => request(`/admin/players/${id}`, { method: 'DELETE' }),
+
   meta: () => request('/meta'),
   teams: (params) => request(`/meta/teams?${new URLSearchParams(params)}`),
 

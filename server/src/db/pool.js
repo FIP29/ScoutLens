@@ -44,3 +44,25 @@ export async function callProc(name, params = []) {
   const [sets] = await pool.query(`CALL ${name}(${placeholders})`, params);
   return Array.isArray(sets[0]) ? sets[0] : [];
 }
+
+/**
+ * Runs `work(conn)` inside a transaction on a dedicated connection.
+ * Commits if it resolves, rolls back if it throws, and always releases the
+ * connection. Used wherever one logical change touches several tables -
+ * creating a player writes to players, player_seasons, positions and
+ * stats, and a failure halfway must not leave a player with no season.
+ */
+export async function withTransaction(work) {
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    const result = await work(conn);
+    await conn.commit();
+    return result;
+  } catch (err) {
+    await conn.rollback().catch(() => {});
+    throw err;
+  } finally {
+    conn.release();
+  }
+}

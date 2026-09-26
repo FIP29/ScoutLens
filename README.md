@@ -46,6 +46,15 @@ JavaScript.
   derive win/draw/loss probabilities and a scoreline grid from a Poisson model
   computed entirely in MySQL. See [the model](#the-squad-strength-model).
 - **League dashboard** — goals, squad ages and club counts per league per season.
+- **Above-average performers** — pick a position and a stat (goals per 90,
+  tackles, save %…) and see every player who beats the average of their own
+  peer group: the same position, in the same league, in the same season. The
+  peer average is a correlated subquery in MySQL; the table sorts on any
+  column. Public, no login.
+- **Admin** — one admin account (bcrypt-hashed password, JWT in an httpOnly
+  cookie) that can add, edit and hard-delete players. Deleting a player
+  cascades through every season, stat row, fantasy score, shortlist entry and
+  squad slot. Everything else in the app stays public.
 
 ## Quick start
 
@@ -107,6 +116,36 @@ npm run db:migrate
 Each step in `db/migrations/` checks whether it has already been applied, so
 running it twice is harmless.
 
+### 3b. Create the admin account (optional)
+
+Only needed to add, edit or delete players; everything else works without it.
+
+1. Generate a secret for signing login tokens and put it in `.env`:
+
+   ```bash
+   node -e "console.log(require('crypto').randomBytes(48).toString('base64'))"
+   ```
+
+   ```
+   JWT_SECRET=<the long string it printed>
+   ```
+
+   The other admin settings (`JWT_EXPIRES_IN`, `BCRYPT_ROUNDS`,
+   `ADMIN_LOGIN_MAX_ATTEMPTS`) have sensible defaults; see `.env.example`.
+
+2. Choose the admin email and password:
+
+   ```bash
+   npm run admin:set
+   ```
+
+   It asks for an email, then the password twice (hidden, at least 12
+   characters), hashes it with bcrypt and stores the one admin row. Run it
+   again any time to change either. There is exactly one admin: the table
+   only allows `id = 1`.
+
+3. Start the app, click **Admin** in the top bar and sign in.
+
 Takes about 12 seconds end to end and prints what it loaded:
 
 ```
@@ -142,7 +181,14 @@ npm run client     # React app  on http://localhost:5173
 Verify the whole stack at any time:
 
 ```bash
-node scripts/smoke-test.mjs     # 24 checks across every route group
+node scripts/smoke-test.mjs     # 44 checks across every route group
+```
+
+With admin credentials it also adds, edits and deletes a throwaway player
+(six more checks):
+
+```bash
+SMOKE_ADMIN_EMAIL=you@example.com SMOKE_ADMIN_PASSWORD='your password' node scripts/smoke-test.mjs
 ```
 
 ## The squad strength model
@@ -244,8 +290,9 @@ directives so they open and run in MySQL Workbench unchanged.
 ```
 data/                     source CSV (vendored from the dataset repo)
 db/
-  schema/                 DDL: dimensions, fact, stat categories, app tables
+  schema/                 DDL: dimensions, fact, stat categories, app tables, admins
   logic/                  views, scoring rules, procedures, triggers
+  migrations/             in-place upgrades for databases built earlier
   seed/                   generated INSERT statements (5.9 MB)
 etl/
   import.js               CSV → MySQL loader
@@ -256,12 +303,16 @@ etl/
 server/src/
   db/pool.js              connection pool
   lib/filters.js          filter whitelist → parameterised WHERE clause
-  routes/                 meta, players, analytics, scouting
+  lib/auth.js             JWT cookie sessions + requireAdmin middleware
+  routes/                 meta, players, analytics, scouting, peers, admin
 client/src/
   components/             FilterBuilder, ResultsTable, shared bits
   pages/                  Dashboard, Search, Player, Compare, Leaderboard,
-                          Shortlists, Squad builder
-scripts/smoke-test.mjs    end-to-end API checks
+                          Shortlists, Squad builder, Above average, Admin
+scripts/
+  start.mjs               runs API + web app together
+  admin-set.mjs           creates / resets the admin account
+  smoke-test.mjs          end-to-end API checks
 docs/                     SCHEMA.md, DATA.md, API.md
 ```
 

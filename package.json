@@ -9,6 +9,7 @@
     "db:import": "node etl/import.js",
     "db:logic": "node etl/run-sql.js db/logic",
     "db:migrate": "node etl/run-sql.js db/migrations && node etl/run-sql.js db/logic",
+    "admin:set": "node scripts/admin-set.mjs",
     "db:export": "node etl/export-seed.js",
     "start": "node scripts/start.mjs",
     "db:setup": "npm run db:schema && npm run db:import && npm run db:logic",
@@ -17,6 +18,7 @@
     "install:all": "npm install && npm --prefix server install && npm --prefix client install"
   },
   "dependencies": {
+    "bcryptjs": "^3.0.3",
     "csv-parse": "^5.5.6",
     "dotenv": "^16.4.5",
     "mysql2": "^3.11.3"

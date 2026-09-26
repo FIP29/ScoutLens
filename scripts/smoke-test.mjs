@@ -5,7 +5,12 @@
 //   BASE=http://host:4000 node scripts/smoke-test.mjs
 //
 // Exercises every route group, including the database rules that are
-// supposed to reject bad writes. Exits non-zero on the first failure.
+// supposed to reject bad writes. Exits non-zero if any check fails.
+//
+// Admin checks that need a real login (create / update / delete a player)
+// run only when credentials are supplied:
+//   SMOKE_ADMIN_EMAIL=you@example.com SMOKE_ADMIN_PASSWORD=... node scripts/smoke-test.mjs
+// Without them the script still proves the admin routes are locked.
 // ---------------------------------------------------------------------
 
 const BASE = process.env.BASE || 'http://127.0.0.1:4000';
@@ -13,16 +18,18 @@ const BASE = process.env.BASE || 'http://127.0.0.1:4000';
 let passed = 0;
 const failures = [];
 
-async function call(method, path, body) {
+async function call(method, path, body, cookie) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (cookie) headers.Cookie = cookie;
   const res = await fetch(`${BASE}${path}`, {
     method,
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: body ? JSON.stringify(body) : undefined,
   });
   const text = await res.text();
   let json = null;
   try { json = text ? JSON.parse(text) : null; } catch { /* non-JSON body */ }
-  return { status: res.status, body: json, raw: text };
+  return { status: res.status, body: json, raw: text, setCookie: res.headers.getSetCookie() };
 }
 
 async function check(name, fn) {
@@ -348,6 +355,145 @@ await check('suggestions exclude players already in the squad', async () => {
   assert(before.body.every((r) => !inSquad.has(r.player_season_id)),
     'a player already in the squad was suggested');
 });
+
+// ---- above-average performers (public) ------------------------------
+
+await check('peer stats list is published', async () => {
+  const { status, body } = await call('GET', '/api/peers/stats');
+  assert(status === 200, `status ${status}`);
+  assert(body.some((s) => s.key === 'goals_per90'), 'goals_per90 missing');
+  assert(body.some((s) => s.lower_is_better), 'no lower-is-better stat');
+});
+
+await check('every above-average row beats its peer average', async () => {
+  const { status, body } = await call('GET',
+    `/api/peers/above-average?stat=goals_per90&position=FW&season_id=${seasonId}`);
+  assert(status === 200, `status ${status}`);
+  assert(body.rows.length > 0, 'no rows');
+  assert(body.rows.every((r) => r.position_code === 'FW'), 'non-forward in results');
+  // The SQL compares unrounded values; the API rounds to 3 dp, so a player
+  // who wins by a hair can show as a tie - but never as behind.
+  assert(body.rows.every((r) => r.value >= r.peer_avg), 'a row does not beat its peer average');
+  assert(body.rows.every((r) => r.minutes >= 900), 'default 900-minute floor not applied');
+});
+
+await check('lower-is-better stats list players below the average', async () => {
+  const { body } = await call('GET',
+    `/api/peers/above-average?stat=goals_against_p90&position=GK&season_id=${seasonId}`);
+  assert(body.stat.lower_is_better, 'stat not flagged lower-is-better');
+  assert(body.rows.length > 0, 'no keepers');
+  assert(body.rows.every((r) => r.value <= r.peer_avg), 'a keeper concedes more than the peers');
+});
+
+await check('above-average rejects an unknown stat or position', async () => {
+  const a = await call('GET', '/api/peers/above-average?stat=goals;DROP TABLE players&position=FW');
+  const b = await call('GET', '/api/peers/above-average?stat=goals&position=XX');
+  assert(a.status === 400 && b.status === 400, `statuses ${a.status}/${b.status}`);
+});
+
+// ---- admin: locked without a login ------------------------------------
+
+await check('admin session probe reports signed out', async () => {
+  const { status, body } = await call('GET', '/api/admin/session');
+  assert(status === 200, `status ${status}`);
+  assert(body.authenticated === false, 'reports signed in without a cookie');
+});
+
+await check('admin writes are refused without a login', async () => {
+  const create = await call('POST', '/api/admin/players', { full_name: 'Nobody' });
+  const remove = await call('DELETE', '/api/admin/players/1');
+  const update = await call('PUT', '/api/admin/players/1', { full_name: 'Nobody' });
+  for (const r of [create, remove, update]) {
+    assert(r.status === 401 || r.status === 503, `status ${r.status}`);
+  }
+});
+
+await check('a forged admin cookie is refused', async () => {
+  const forged = 'eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOjEsImVtYWlsIjoieEB5LnoifQ.';
+  const { status } = await call('DELETE', '/api/admin/players/1', null, `scoutlens_admin=${forged}`);
+  assert(status === 401 || status === 503, `status ${status}`);
+});
+
+await check('a wrong admin password is refused', async () => {
+  const { status, body } = await call('POST', '/api/admin/login',
+    { email: 'nobody@example.com', password: 'definitely-not-it' });
+  assert(status === 401 || status === 503, `status ${status}`);
+  assert(body.error, 'no error message');
+});
+
+// ---- admin: full CRUD with real credentials (optional) ----------------
+
+const adminEmail = process.env.SMOKE_ADMIN_EMAIL;
+const adminPassword = process.env.SMOKE_ADMIN_PASSWORD;
+
+if (!adminEmail || !adminPassword) {
+  console.log('  skip  admin create/update/delete (set SMOKE_ADMIN_EMAIL and SMOKE_ADMIN_PASSWORD)');
+} else {
+  let cookie, newPlayerId, newPsId;
+
+  await check('admin can sign in and gets an httpOnly cookie', async () => {
+    const { status, setCookie } = await call('POST', '/api/admin/login',
+      { email: adminEmail, password: adminPassword });
+    assert(status === 200, `status ${status}`);
+    const raw = setCookie.find((c) => c.startsWith('scoutlens_admin='));
+    assert(raw, 'no session cookie');
+    assert(/HttpOnly/i.test(raw) && /SameSite=Strict/i.test(raw), `weak cookie: ${raw}`);
+    cookie = raw.split(';')[0];
+  });
+
+  await check('admin can add a player with a first season', async () => {
+    const meta = await call('GET', '/api/meta');
+    const league = meta.body.leagues[0];
+    const teams = await call('GET', `/api/meta/teams?season_id=${seasonId}&league_id=${league.league_id}`);
+    const { status, body } = await call('POST', '/api/admin/players', {
+      full_name: `Smoke Admin Player ${stamp}`,
+      born_year: 2000,
+      season: {
+        season_id: seasonId, league_id: league.league_id, team_id: teams.body[0].team_id,
+        position_code: 'FW',
+        stats: { matches_played: 10, starts: 8, minutes: 800, goals: 5, assists: 2 },
+      },
+    }, cookie);
+    assert(status === 201, `status ${status}: ${JSON.stringify(body)}`);
+    newPlayerId = body.player_id;
+    newPsId = body.player_season_id;
+  });
+
+  await check('admin rejects impossible stats', async () => {
+    const { status } = await call('PUT', `/api/admin/player-seasons/${newPsId}`,
+      { stats: { starts: 99 } }, cookie);
+    assert(status === 400, `status ${status}`);
+  });
+
+  await check('admin update rescores fantasy points', async () => {
+    const before = await call('GET', `/api/admin/players/${newPlayerId}`, null, cookie);
+    assert(before.status === 200, `status ${before.status}`);
+    const { status, body } = await call('PUT', `/api/admin/player-seasons/${newPsId}`,
+      { stats: { goals: 9 } }, cookie);
+    assert(status === 200, `status ${status}: ${JSON.stringify(body)}`);
+    assert(body.total_points > 0, 'no points after update');
+    const rename = await call('PUT', `/api/admin/players/${newPlayerId}`,
+      { full_name: `Smoke Admin Renamed ${stamp}` }, cookie);
+    assert(rename.status === 200, `rename status ${rename.status}`);
+  });
+
+  await check('admin delete cascades through every child table', async () => {
+    await call('POST', `/api/shortlists/${shortlistId}/entries`, { player_season_id: newPsId });
+    const { status, body } = await call('DELETE', `/api/admin/players/${newPlayerId}`, null, cookie);
+    assert(status === 200, `status ${status}`);
+    assert(body.cascaded.seasons === 1 && body.cascaded.stat_rows === 1,
+      `unexpected cascade ${JSON.stringify(body.cascaded)}`);
+    const gone = await call('GET', `/api/players/${newPlayerId}`);
+    assert(gone.status === 404, `player still reachable: ${gone.status}`);
+  });
+
+  await check('admin sign-out clears the cookie', async () => {
+    const out = await call('POST', '/api/admin/logout', null, cookie);
+    assert(out.status === 204, `status ${out.status}`);
+    const cleared = out.setCookie.find((c) => c.startsWith('scoutlens_admin='));
+    assert(cleared && /Expires=Thu, 01 Jan 1970/i.test(cleared), 'cookie not cleared');
+  });
+}
 
 // ---- cleanup ----------------------------------------------------------
 
